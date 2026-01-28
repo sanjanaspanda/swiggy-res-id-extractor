@@ -1,0 +1,77 @@
+@import "tailwindcss";
+@plugin "daisyui";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/poppins/600.css";
+@import "@fontsource/outfit/700.css";
+
+
+
+@theme {
+  --color-swiggy-orange: #FF5200;
+  --color-swiggy-lightOrange: #FF8A00;
+  --color-swiggy-purple: #2D1B69;
+  --color-swiggy-lightPurple: #4A2C8F;
+  --color-accents-green: #00C853;
+  --color-accents-coral: #FF6B6B;
+
+  --font-sans: "Inter", "Poppins", sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "Fira Code", monospace;
+
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-spin-slow: spin 3s linear infinite;
+
+  @keyframes float {
+
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+
+    50% {
+      transform: translateY(-20px);
+    }
+  }
+}
+
+@layer base {
+  body {
+    @apply font-sans text-base-content min-h-screen selection:bg-primary selection:text-white overflow-x-hidden;
+    background-size: 400% 400%;
+    animation: gradientBG 15s ease infinite;
+  }
+}
+
+@layer utilities {
+  .glass-card {
+    @apply backdrop-blur-md bg-white/70 dark:bg-base-100/60 border border-white/20 shadow-xl;
+  }
+
+  .text-gradient {
+    @apply text-transparent bg-clip-text bg-gradient-to-r from-swiggy-orange to-swiggy-lightOrange;
+  }
+
+  .scissors-border {
+    background-image: linear-gradient(to right, #ccc 50%, rgba(255, 255, 255, 0) 0%);
+    background-position: bottom;
+    background-size: 10px 1px;
+    background-repeat: repeat-x;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-base-300 rounded-full hover:bg-base-content/20 transition-colors;
+}

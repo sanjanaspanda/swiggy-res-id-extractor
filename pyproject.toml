@@ -1,0 +1,15 @@
+[project]
+name = "swiggy-res-id-extractor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas>=2.3.3",
+    "playwright>=1.57.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.22",
+    "websockets>=16.0",
+    "playwright-stealth>=2.0.1",
+]
