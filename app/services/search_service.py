@@ -2,6 +2,8 @@ from playwright.async_api import async_playwright
 from playwright_stealth.stealth import Stealth
 import asyncio
 import difflib
+import re
+from pprint import pprint
 
 
 class SwiggySearchService:
@@ -35,37 +37,30 @@ class SwiggySearchService:
         Check for specific Swiggy 'Not Found' indicators.
         """
         try:
-            # 1. Check Title First (Most reliable)
+            # 1. Check for explicit error text indicators on the page
+            # These are robust and should override any title heuristics
+
+            # "Uh-oh!" is a common Swiggy error header
+            if (
+                await page.get_by_text("Uh-oh!", exact=False).is_visible()
+                and not await page.get_by_text(
+                    "Uh-oh! Outlet is not accepting orders at the moment.", exact=False
+                ).is_visible()
+            ):
+                return True
+
+            # "Sorry! This should not have happened" is the subtext
+            if await page.get_by_text(
+                "Sorry! This should not have happened", exact=False
+            ).is_visible():
+                return True
+
+            # 2. Check Title
             title = await page.title()
             title_lower = title.strip().lower()
 
             if title_lower in ["page not found", "movie not found"]:
                 return True
-
-            # Valid restaurant pages usually have Swiggy and Order/Online/Dineout in title
-            is_likely_valid = "swiggy" in title_lower and (
-                "order" in title_lower
-                or "online" in title_lower
-                or "dineout" in title_lower
-            )
-
-            # 2. Check for the specific structure provided by user
-            # <div class="_3dbwz"> ... <div class="_3f3ym">Uh-oh!</div> ...
-            error_container = page.locator("._3dbwz")
-            if await error_container.count() > 0 and await error_container.is_visible():
-                uhoh_locator = page.locator("text=Uh-oh!")
-                if await uhoh_locator.count() > 0 and await uhoh_locator.is_visible():
-                    if is_likely_valid:
-                        return False
-                    return True
-
-                sorry_locator = page.locator(
-                    "text=Sorry! This should not have happened"
-                )
-                if await sorry_locator.count() > 0 and await sorry_locator.is_visible():
-                    if is_likely_valid:
-                        return False
-                    return True
 
             # 3. Check for "Page Not Found" text specifically if it's large/visible
             not_found_text = page.get_by_text("Page Not Found", exact=True)
@@ -83,6 +78,7 @@ class SwiggySearchService:
             "not_found": False,
             "error": None,
         }
+        not_found_count = 0
 
         query = f"{restaurant_name}, {location} swiggy"
         candidate_url_str = None
@@ -91,7 +87,7 @@ class SwiggySearchService:
         try:
             async with Stealth().use_async(async_playwright()) as p:
                 browser = await p.chromium.launch(
-                    headless=True,
+                    headless=False,
                     channel="chrome",
                     args=[
                         "--disable-blink-features=AutomationControlled",
@@ -133,7 +129,8 @@ class SwiggySearchService:
                     links = await page.locator(
                         'a[href*="swiggy.com/restaurants"], a[href*="swiggy.com/city"]'
                     ).all()
-
+                    print("Links found:", len(links))
+                    pprint(links)
                     if links:
                         candidate_url_str = await self._process_links_and_get_url(
                             links, location, restaurant_name
@@ -168,7 +165,7 @@ class SwiggySearchService:
             async with async_playwright() as p:
                 # Standard Launch (matching extract_service)
                 browser = await p.chromium.launch(
-                    headless=True,
+                    headless=False,
                     channel="chrome",
                     args=[
                         "--disable-blink-features=AutomationControlled",
@@ -194,13 +191,15 @@ class SwiggySearchService:
                     except Exception as e:
                         print(f"Navigation error: {e}")
 
-                    await asyncio.sleep(2)
-
-                    not_found_result = await self._is_not_found(page)
-                    if not not_found_result:
-                        result["url"] = page.url
-                        result["not_found"] = False
-                        return result
+                    await asyncio.sleep(3)
+                    while not_found_count < 2:
+                        not_found_result = await self._is_not_found(page)
+                        if not not_found_result:
+                            result["url"] = page.url
+                            result["not_found"] = False
+                            return result
+                        not_found_count += 1
+                        await page.reload()
 
                     # Check Dineout
                     base_url = candidate_url_str.rstrip("/")
@@ -213,7 +212,7 @@ class SwiggySearchService:
                     except Exception:
                         pass
 
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
 
                     not_found_dineout = await self._is_not_found(page)
                     if not not_found_dineout:
@@ -241,7 +240,6 @@ class SwiggySearchService:
         Helper to select the best URL from search results.
         Returns the raw URL string or None.
         """
-        import re
         from urllib.parse import unquote
 
         MIN_NAME_SCORE = 0.45
@@ -270,6 +268,13 @@ class SwiggySearchService:
 
                 text = normalize(text_raw)
                 href = normalize(href_raw)
+
+                # Validate URL structure (must end with number or rest<number>)
+                # Clean query params first if any (though normalize keeps them usually, let's look at raw href logic)
+                # Ideally check the href path.
+                url_path = href_raw.split("?")[0].rstrip("/")
+                if not re.search(r"-(?:rest)?\d+$", url_path):
+                    continue
 
                 slug = ""
                 try:

@@ -77,7 +77,9 @@ const RestaurantCard = ({ data }) => {
                                 return <OfferChips key={category} title={category} items={items} colorClass={colorClass} />;
                             })
                         ) : (
-                            items_99 && items_99.length > 0 && <OfferChips title="99 Store Items" items={items_99} colorClass="badge-secondary badge-outline" />
+                            items_99 && items_99.length > 0 && <OfferChips title={
+                                promo_codes?.find(code => code.split("|")[0].toLowerCase().includes("items at"))?.split("|")[0] || "Items at ₹99"
+                            } items={items_99} colorClass="badge-secondary badge-outline" />
                         )}
 
                         {(!offer_items_raw && (!items_99 || items_99.length === 0)) && (

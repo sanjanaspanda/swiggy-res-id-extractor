@@ -34,15 +34,17 @@ async def process_row(row, job_id: str):
 
     # Initialize result with original data
     result = row.copy()
-    result["status"] = "Processing"
-    result["dineout_only"] = False
-    result["not_found"] = False
-    result["swiggy_url"] = ""
-    result["promo_codes"] = ""
-    result["99_store_items"] = ""
-    result["offer_items"] = ""
+    result["status_text"] = "Processing"
+    result["swiggy_id"] = "NA"
+    result["promos"] = ""
+    result["promo_codes"] = ""  # Kept for UI
+    result["promos"] = ""
+    result["promo_codes"] = ""  # Kept for UI
+    result["offer_items_formatted"] = ""
     result["rating"] = ""
     result["total_ratings"] = ""
+    result["99_store_items"] = ""
+    result["offer_items"] = {}
 
     # Notify start
     job = jobs.get(job_id)
@@ -86,10 +88,33 @@ async def process_row(row, job_id: str):
             error_msg = url if not_found else None
 
         if not_found or not url:
-            result["swiggy_url"] = ""
+            # Try to extract ID from URL even if not found (e.g. from generic error page URL)
+            # The search service might return a URL that is technically "Not Found" but has ID
+
+            # Check search_result_obj for a potential URL if 'url' var is empty
+            potential_url = url
+            if not potential_url and isinstance(search_result_obj, dict):
+                potential_url = search_result_obj.get("url", "")
+            if not potential_url:
+                # Check error msg if it looks like a url
+                if error_msg and "http" in str(error_msg):
+                    potential_url = str(error_msg)
+
+            swiggy_id = "NA"
+            if potential_url:
+                import re
+
+                match = re.search(r"(\d+)$", potential_url)
+                if match:
+                    swiggy_id = match.group(1)
+
+            result["swiggy_id"] = swiggy_id
+            result["swiggy_url"] = potential_url or ""
+
             result["status"] = "Not Found"
             result["not_found"] = True
             result["error"] = error_msg or "Restaurant not found"
+            result["status_text"] = "Not on Swiggy"
             await job["queue"].put(
                 {
                     "type": "update",
@@ -114,7 +139,8 @@ async def process_row(row, job_id: str):
                     "data": {
                         "id": str(row.name),
                         "status": "Completed",
-                        "dineout_only": True,
+                        "status_text": "Only Dineout",
+                        "swiggy_id": "NA",
                         "swiggy_url": url,
                         "name": name,
                     },
@@ -130,45 +156,86 @@ async def process_row(row, job_id: str):
             }
         )
 
-        data = await extract_service.extract_data(url)
+        # Retry logic: Try up to 3 times if data is missing
+        max_retries = 3
+        data = {}
 
-        # Retry logic for empty data (same as frontend)
-        if (
-            not data.get("rating")
-            and not data.get("promo_codes")
-            and not data.get("99_store_items")
-        ):
-            await asyncio.sleep(2)
+        for attempt in range(max_retries):
+            # Update status if retrying
+            if attempt > 0:
+                await job["queue"].put(
+                    {
+                        "type": "update",
+                        "data": {
+                            "id": str(row.name),
+                            "status": f"Extracting (try {attempt + 1}/{max_retries})",
+                            "url": url,
+                        },
+                    }
+                )
+                await asyncio.sleep(2)  # Backoff
+
             data = await extract_service.extract_data(url)
+
+            # Check if we have useful data
+            has_data = (
+                data.get("rating")
+                or data.get("promo_codes")
+                or data.get("99_store_items")
+            )
+
+            # Also failing if explicit error (unless it's not found, which is terminal)
+            if "error" in data:
+                if "not found" in data["error"].lower():
+                    break  # Don't retry if really not found
+                # Otherwise might be network error, retry might help?
+                pass
+
+            if has_data:
+                break
+
+        # If loop finishes without data, we use whatever we got (likely empty or error)
 
         if "error" in data:
             result["status"] = "Partial Error"
             result["error"] = data["error"]
+            if "not found" in data["error"].lower():
+                result["status"] = "Not Found"
+                result["not_found"] = True
+                result["status_text"] = "Not on Swiggy"
         else:
+            # Extract ID from URL
+            # Expected format: ...-rest12345 or ...-12345
+            import re
+
+            swiggy_id = "NA"
+            match = re.search(r"(\d+)$", url)
+            if match:
+                swiggy_id = match.group(1)
+
+            result["swiggy_id"] = swiggy_id
+            result["status_text"] = "On Swiggy"
+
             result["status"] = "Completed"
-            result["promo_codes"] = ", ".join(data.get("promo_codes", []))
-            result["99_store_items"] = ", ".join(data.get("99_store_items", []))
+            # Join with newlines for Excel
+            result["promo_codes"] = ", ".join(
+                data.get("promo_codes", [])
+            )  # Kept for UI
+            result["promos"] = "\n".join(data.get("promo_codes", []))
 
-            # Flatten offer items for CSV columns
-            offer_items_data = data.get("offer_items", {})
-            result["offer_items"] = (
-                ""  # Keep this for UI summary if needed, or build it
-            )
-
+            # Formatted offer string for Excel
             offer_str_parts = []
+            offer_items_data = data.get("offer_items", {})
             for cat, items in offer_items_data.items():
                 items_str = ", ".join(items)
                 offer_str_parts.append(f"{cat}: {items_str}")
 
-                # Add dynamic column for CSV
-                # Santize key
-                safe_key = f"offer_{cat.replace(' ', '_').replace('%', 'pct')}"
-                result[safe_key] = items_str
-
+            result["offer_items_formatted"] = "\n".join(offer_str_parts)
             result["offer_items"] = " | ".join(offer_str_parts)
 
             result["rating"] = data.get("rating", "")
             result["total_ratings"] = data.get("total_ratings", "")
+            result["99_store_items"] = "\n".join(data.get("99_store_items", []))
 
         # Prepare update data for frontend (keep it simple for UI)
         # We send the full result dict to the UI, so the dynamic keys will be there too if we want
@@ -182,12 +249,10 @@ async def process_row(row, job_id: str):
             "total_ratings": result["total_ratings"],
             "promo_codes": result["promo_codes"],
             "items_99": result["99_store_items"],
-            "offer_items": result["offer_items"],  # This is the summary string
-            "offer_items_raw": data.get(
-                "offer_items", {}
-            ),  # Pass raw obj for UI to render
-            "dineout_only": result["dineout_only"],
-            "not_found": result["not_found"],
+            "offer_items_display": result["offer_items"],  # This is the summary string
+            "offer_items": data.get("offer_items", {}),
+            "status_text": result.get("status_text", "Processing"),
+            "swiggy_id": result.get("swiggy_id", "NA"),
             "swiggy_url": result["swiggy_url"],
         }
 
@@ -213,7 +278,7 @@ async def process_row(row, job_id: str):
 
 async def run_bulk_job(job_id: str, df: pd.DataFrame):
     job = jobs[job_id]
-    semaphore = asyncio.Semaphore(8)  # Concurrency limit
+    semaphore = asyncio.Semaphore(5)  # Concurrency limit
 
     async def sem_task(row):
         async with semaphore:
@@ -312,12 +377,74 @@ async def download_results(job_id: str):
     if not job or job["status"] != "completed":
         raise HTTPException(status_code=400, detail="Job not ready or found")
 
-    df = job["results"]
-    stream = io.StringIO()
-    df.to_csv(stream, index=False)
+    # Prepare final DataFrame for Excel export
+    final_df = job["results"].copy()
+
+    # Handle missing columns if job failed early
+    for col in ["status_text", "swiggy_id", "promos", "offer_items_formatted"]:
+        if col not in final_df.columns:
+            final_df[col] = ""
+
+    # Map status_text for Not Found items if not already set correctly in process_row error flow
+    # (In process_row we only set it for success/dineout, need to ensure error cases have it)
+    def get_status(row):
+        if row.get("status_text"):
+            return row.get("status_text")
+        if row.get("not_found"):
+            return "Not on Swiggy"
+        return "Not on Swiggy"  # Default fallback for errors
+
+    # Just ensure the column exists and populate if empty
+    final_df["status_text"] = final_df.apply(
+        lambda x: x["status_text"]
+        if x.get("status_text")
+        else ("Not on Swiggy" if x.get("not_found") else "Error"),
+        axis=1,
+    )
+
+    # Rename columns to match requirements
+    final_df = final_df.rename(
+        columns={
+            "Restaurant Name": "Restaurant Name",
+            "Location": "Location",
+            "swiggy_id": "Swiggy Restaurant ID",
+            "status_text": "Status",
+            "promos": "Promos",
+            "offer_items_formatted": "Offer Items",
+            "rating": "Rating",
+            "total_ratings": "Total Ratings",
+            "99_store_items": "99 Store Items",
+            "dineout_only": "Dineout Only",
+        }
+    )
+    print(final_df.columns)
+
+    # Select only required columns
+    cols_to_keep = [
+        "Restaurant Name",
+        "Location",
+        "Swiggy Restaurant ID",
+        "Status",
+        "Promos",
+        "Offer Items",
+        "Rating",
+        "Total Ratings",
+        "99 Store Items",
+    ]
+    # Filter only existing columns to be safe
+    cols_to_keep = [c for c in cols_to_keep if c in final_df.columns]
+
+    final_df = final_df[cols_to_keep]
+
+    stream = io.BytesIO()
+    # Use xlsxwriter or default (openpyxl)
+    final_df.to_excel(stream, index=False, engine="openpyxl")
 
     from fastapi.responses import StreamingResponse
 
-    response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
-    response.headers["Content-Disposition"] = "attachment; filename=swiggy_results.csv"
+    response = StreamingResponse(
+        iter([stream.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response.headers["Content-Disposition"] = "attachment; filename=swiggy_results.xlsx"
     return response

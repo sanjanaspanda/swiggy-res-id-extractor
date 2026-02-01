@@ -1,13 +1,23 @@
 from playwright.async_api import async_playwright
 import asyncio
 import ast
+import re
 
 
 class SwiggyExtractService:
     def is_swiggy_restaurant_url(self, url: str) -> bool:
         if not isinstance(url, str):
             return False
-        return "swiggy.com" in url and "rest" in url
+        if "swiggy.com" not in url or "rest" not in url:
+            return False
+
+        # Check for specific ending pattern: -<number> or -rest<number>
+        # Strip query parameters and trailing slash
+        clean_url = url.split("?")[0].rstrip("/")
+        if not re.search(r"-(?:rest)?\d+$", clean_url):
+            return False
+
+        return True
 
     def extract_offers(self, response_data):
         try:
@@ -74,10 +84,25 @@ class SwiggyExtractService:
                         == "type.googleapis.com/swiggy.presentation.food.v2.Dish"
                     ):
                         info = data.get("info", {})
+                        final_price = info.get("finalPrice", None)
                         if info.get("isNinetyninestoreItem") is True:
                             name = info.get("name")
+                            price = info.get("price")
+                            if price is None:
+                                price = info.get("defaultPrice")
                             if name:
-                                results.append(name)
+                                results.append(
+                                    f"{name} | original price: {price / 100} | final price: {final_price / 100}"
+                                )
+                        elif final_price:
+                            name = info.get("name")
+                            price = info.get("price")
+                            if price is None:
+                                price = info.get("defaultPrice")
+                            if name:
+                                results.append(
+                                    f"{name} | original price: {price / 100} | final price: {final_price / 100}"
+                                )
 
                     for k, v in data.items():
                         results.extend(find_99_recursive(v))
@@ -205,7 +230,7 @@ class SwiggyExtractService:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
-                    headless=True,
+                    headless=False,
                     args=["--disable-blink-features=AutomationControlled"],
                 )
 
@@ -224,9 +249,24 @@ class SwiggyExtractService:
                 page.on("response", handle_response)
 
                 await page.goto(url, wait_until="networkidle", timeout=60000)
+                await asyncio.sleep(4)  # Increased for stability under load
 
-                # Wait a bit to ensure DAPI calls finish if networkidle isn't enough
-                await asyncio.sleep(2)
+                # Safety Check: If we landed on a "Not Found" page despite earlier validation
+                if (
+                    await page.get_by_text("Uh-oh!", exact=False).is_visible()
+                    and not await page.get_by_text(
+                        "Uh-oh! Outlet is not accepting orders at the moment.",
+                        exact=False,
+                    ).is_visible()
+                ):
+                    await browser.close()
+                    return {"error": "Restaurant not found (Extraction Phase)"}
+
+                if await page.get_by_text(
+                    "Sorry! This should not have happened", exact=False
+                ).is_visible():
+                    await browser.close()
+                    return {"error": "Restaurant not found (Extraction Phase)"}
 
                 await browser.close()
 
