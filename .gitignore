@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 node_modules/
+data_new/
+*.zip
+*.xlsx
